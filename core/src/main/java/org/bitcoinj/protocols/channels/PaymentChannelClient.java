@@ -31,7 +31,7 @@ import com.google.protobuf.ByteString;
 import net.jcip.annotations.GuardedBy;
 import org.bitcoin.paymentchannel.Protos;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
 import java.util.concurrent.locks.ReentrantLock;
@@ -349,7 +349,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     }
 
     @GuardedBy("lock")
-    private void receiveRefund(Protos.TwoWayChannelMessage refundMsg, @Nullable KeyParameter userKey) throws VerificationException {
+    private void receiveRefund(Protos.TwoWayChannelMessage refundMsg, @Nullable KeyParameter userKey)
+            throws SignatureDecodeException, VerificationException {
         checkState(majorVersion == 1);
         checkState(step == InitStep.WAITING_FOR_REFUND_RETURN && refundMsg.hasReturnRefund());
         log.info("Got RETURN_REFUND message, providing signed contract");
@@ -407,9 +408,6 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         conn.channelOpen(wasInitiated);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void receiveMessage(Protos.TwoWayChannelMessage msg) throws InsufficientMoneyException {
         lock.lock();
@@ -472,7 +470,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                         closeReason = CloseReason.REMOTE_SENT_INVALID_MESSAGE;
                         break;
                 }
-            } catch (VerificationException e) {
+            } catch (SignatureDecodeException | VerificationException e) {
                 log.error("Caught verification exception handling message from server", e);
                 errorBuilder = Protos.Error.newBuilder()
                         .setCode(Protos.Error.ErrorCode.BAD_TRANSACTION);
@@ -513,7 +511,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         checkState(lock.isHeldByCurrentThread());
         if (msg.hasSettlement()) {
             Transaction settleTx = wallet.getParams().getDefaultSerializer().makeTransaction(msg.getSettlement().getTx().toByteArray());
-            log.info("CLOSE message received with settlement tx {}", settleTx.getHash());
+            log.info("CLOSE message received with settlement tx {}", settleTx.getTxId());
             // TODO: set source
             if (state != null && state().isSettlementTransaction(settleTx)) {
                 // The wallet has a listener on it that the state object will use to do the right thing at this
@@ -539,7 +537,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * intending to reopen the channel later. There is likely little reason to use this in a stateless protocol.</p>
      *
      * <p>Note that this <b>MUST</b> still be called even after either
-     * {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#destroyConnection(org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason)} or
+     * {@link IPaymentChannelClient.ClientConnection#destroyConnection(PaymentChannelCloseException.CloseReason)} or
      * {@link PaymentChannelClient#settle()} is called, to actually handle the connection close logic.</p>
      */
     @Override
@@ -559,7 +557,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * payment transaction.</p>
      *
      * <p>Note that this only generates a CLOSE message for the server and calls
-     * {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#destroyConnection(org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason)} to settle the connection, it does not
+     * {@link IPaymentChannelClient.ClientConnection#destroyConnection(PaymentChannelCloseException.CloseReason)} to settle the connection, it does not
      * actually handle connection close logic, and {@link PaymentChannelClient#connectionClosed()} must still be called
      * after the connection fully closes.</p>
      *
@@ -604,8 +602,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                     .setTimeWindowSecs(timeWindow);
 
             if (storedChannel != null) {
-                versionNegotiationBuilder.setPreviousChannelContractHash(ByteString.copyFrom(storedChannel.contract.getHash().getBytes()));
-                log.info("Begun version handshake, attempting to reopen channel with contract hash {}", storedChannel.contract.getHash());
+                versionNegotiationBuilder.setPreviousChannelContractHash(ByteString.copyFrom(storedChannel.contract.getTxId().getBytes()));
+                log.info("Begun version handshake, attempting to reopen channel with contract hash {}", storedChannel.contract.getTxId());
             } else
                 log.info("Begun version handshake creating new channel");
 
